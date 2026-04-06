@@ -1,34 +1,36 @@
 """
-DERIV ACCUMULATOR BOT — R_10
-=============================
-Symbol   : R_10 (Volatility 10 Index)
-Contract : ACCU — stake grows by growth_rate% each tick while
-           price stays within a defined range. Knocked out if
-           price breaches the range. You can sell at any time.
+DERIV ACCUMULATOR BOT — 1HZ10V
+================================
+Symbol   : 1HZ10V (configurable)
+Contract : ACCU — 1-tick accumulator
+           Stake grows by growth_rate% if price stays in range
+           for exactly ONE tick. Auto-settles immediately.
 
 Strategy
 --------
-  Enter during calm σ windows (σ < session average).
-  Growth rate is adaptive based on σ conditions:
-    · σ very calm  (< 0.6 × avg) → 2% growth (wider range, faster growth)
-    · σ calm       (< 0.8 × avg) → 1% growth (widest range, safest)
-    · σ at/above avg              → skip
+  At 1 tick, the contract is essentially:
+    · Win  → price stayed in range this tick → collect growth_rate% of stake
+    · Lose → price breached the range        → lose stake
 
-  Take profit: sell when contract value reaches TAKE_PROFIT_PCT
-  above stake. Exit before a spike can knock it out.
+  Entry only when σ is VERY CALM (ratio < ENTRY_CALM threshold).
+  Growth rate selected by calm depth:
+    · extremely calm (ratio < 0.50 × avg) → 5% growth
+    · very calm      (ratio < 0.60 × avg) → 4% growth
+    · calm           (ratio < 0.70 × avg) → 3% growth
+    · above threshold                     → skip
 
-  No martingale — flat stake always. One loss = one stake only.
-  Re-enter when conditions reset.
+  No take-profit sell needed — 1-tick contracts auto-settle.
+  High frequency — re-enters immediately after each settlement.
 
-  Monitor data basis (R_10, ~3100 ticks):
-    · σ avg = 0.089, range 0.06–0.12
-    · Symbol spends 99.9% of time in NORMAL band
-    · Avg run = 2t → calm periods are frequent and persistent
+  Monitor data basis (1HZ10V, ~6300 ticks):
+    · σ avg = 0.100, range 0.06–0.14
+    · 99.9% time in NORMAL band
+    · At 1-tick, knockout risk is minimal during calm windows
 
 Risk
 ----
-  Flat stake $1.00 per trade.
-  Circuit breaker: 3 consecutive knockouts → 5 min pause.
+  Flat stake $2.00 per trade. No martingale.
+  Circuit breaker: 5 consecutive knockouts → 5 min pause.
   Session target: +$10 | Session stop: -$20
 """
 
@@ -69,45 +71,40 @@ def _env(key, default):
 
 
 CONFIG = {
-    "api_token":           _env("DERIV_API_TOKEN", "REPLACE_WITH_YOUR_TOKEN"),
-    "app_id":              _env("DERIV_APP_ID", 1089),
-    "symbol":              _env("SYMBOL", "R_10"),
-    "currency":            "USD",
+    "api_token":            _env("DERIV_API_TOKEN", "REPLACE_WITH_YOUR_TOKEN"),
+    "app_id":               _env("DERIV_APP_ID", 1089),
+    "symbol":               _env("SYMBOL", "1HZ10V"),
+    "currency":             "USD",
 
-    # Volatility window
-    "vol_window":          _env("VOL_WINDOW", 50),
-    "min_warmup":          _env("MIN_WARMUP", 60),
+    # Volatility window for σ calculation
+    "vol_window":           _env("VOL_WINDOW", 50),
+    "min_warmup":           _env("MIN_WARMUP", 60),
 
-    # Entry gate thresholds (σ / session_avg)
-    "entry_very_calm":     _env("ENTRY_VERY_CALM", 0.6),  # → 2% growth
-    "entry_calm":          _env("ENTRY_CALM", 0.8),        # → 1% growth
+    # Entry calm thresholds (σ / session_avg ratio)
+    "entry_extremely_calm": _env("ENTRY_EXTREMELY_CALM", 0.50),  # → 5% growth
+    "entry_very_calm":      _env("ENTRY_VERY_CALM",      0.60),  # → 4% growth
+    "entry_calm":           _env("ENTRY_CALM",           0.70),  # → 3% growth
 
-    # Take profit — sell when profit % of stake is reached
-    "take_profit_pct":     _env("TAKE_PROFIT_PCT", 0.20),  # 20%
+    # Cooldown ticks between trades
+    "cooldown_ticks":       _env("COOLDOWN_TICKS", 2),
 
-    # Polling interval to check contract value (seconds)
-    "poll_interval":       _env("POLL_INTERVAL", 1),
-
-    # Cooldown between trades (ticks)
-    "cooldown_ticks":      _env("COOLDOWN_TICKS", 5),
-
-    # Risk — flat stake
-    "stake":               _env("STAKE", 1.00),
-    "target_profit":       _env("TARGET_PROFIT", 10.0),
-    "stop_loss":           _env("STOP_LOSS", 20.0),
+    # Risk — flat stake, no martingale
+    "stake":                _env("STAKE", 2.00),
+    "target_profit":        _env("TARGET_PROFIT", 10.0),
+    "stop_loss":            _env("STOP_LOSS", 20.0),
 
     # Circuit breaker
-    "cb_limit":            _env("CB_LIMIT", 3),
-    "cb_pause_secs":       _env("CB_PAUSE", 300),
+    "cb_limit":             _env("CB_LIMIT", 5),
+    "cb_pause_secs":        _env("CB_PAUSE", 300),
 
     # Resilience
-    "lock_timeout":        _env("LOCK_TIMEOUT", 300),   # accumulators can run long
-    "buy_retries":         _env("BUY_RETRIES", 8),
-    "reconnect_min":       _env("RECONNECT_MIN", 2),
-    "reconnect_max":       _env("RECONNECT_MAX", 60),
-    "ws_ping":             _env("WS_PING", 30),
-    "orphan_attempts":     _env("ORPHAN_ATTEMPTS", 4),
-    "orphan_interval":     _env("ORPHAN_INTERVAL", 3),
+    "lock_timeout":         _env("LOCK_TIMEOUT", 30),
+    "buy_retries":          _env("BUY_RETRIES", 8),
+    "reconnect_min":        _env("RECONNECT_MIN", 2),
+    "reconnect_max":        _env("RECONNECT_MAX", 60),
+    "ws_ping":              _env("WS_PING", 30),
+    "orphan_attempts":      _env("ORPHAN_ATTEMPTS", 4),
+    "orphan_interval":      _env("ORPHAN_INTERVAL", 3),
 }
 
 
@@ -131,10 +128,10 @@ def _jlog(obj):
 
 class VolEngine:
     def __init__(self, cfg):
-        self.cfg    = cfg
-        self.prices = deque(maxlen=cfg["vol_window"] + 2)
-        self.moves  = deque(maxlen=cfg["vol_window"])
-        self.tick_n = 0
+        self.cfg           = cfg
+        self.prices        = deque(maxlen=cfg["vol_window"] + 2)
+        self.moves         = deque(maxlen=cfg["vol_window"])
+        self.tick_n        = 0
         self.sigma_history = deque(maxlen=500)
 
     def add_tick(self, price: float):
@@ -158,67 +155,73 @@ class VolEngine:
 
     def session_avg_sigma(self) -> float:
         if not self.sigma_history:
-            return 0.089
+            return 0.100   # fallback from 1HZ10V monitor data
         return sum(self.sigma_history) / len(self.sigma_history)
 
     def evaluate(self):
         """
-        Returns (should_trade, growth_rate, sigma) or (False, 0, sigma).
-        growth_rate is 0.01 or 0.02 (Deriv API values).
+        Returns (should_trade, growth_rate, sigma, ratio).
+        growth_rate: 0.03 / 0.04 / 0.05
         """
         if not self.is_ready():
-            return False, 0, 0.0
+            return False, 0, 0.0, 0.0
 
         s   = self.sigma()
         avg = self.session_avg_sigma()
 
         if avg == 0:
-            return False, 0, s
+            return False, 0, s, 0.0
 
         ratio = s / avg
 
+        if ratio < self.cfg["entry_extremely_calm"]:
+            return True, 0.05, s, ratio
         if ratio < self.cfg["entry_very_calm"]:
-            return True, 0.02, s   # very calm → 2% growth, wider range
+            return True, 0.04, s, ratio
         if ratio < self.cfg["entry_calm"]:
-            return True, 0.01, s   # calm → 1% growth, widest range
-        return False, 0, s
+            return True, 0.03, s, ratio
+
+        return False, 0, s, ratio
 
 
 # ============================================================================
-# SESSION RISK MANAGER (flat stake)
+# RISK MANAGER — flat stake
 # ============================================================================
 
 class RiskManager:
     def __init__(self, cfg):
-        self.cfg           = cfg
         self.stake         = cfg["stake"]
         self.target_profit = cfg["target_profit"]
         self.stop_loss     = cfg["stop_loss"]
         self.total_profit  = 0.0
-        self.wins          = 0    # successful take-profits
-        self.losses        = 0    # knockouts
+        self.wins          = 0
+        self.losses        = 0
         self.loss_streak   = 0
 
     def record_win(self, profit: float):
         self.wins         += 1
         self.total_profit += profit
         self.loss_streak   = 0
-        _log("WIN", f"+${profit:.2f}")
+        _log("WIN", f"+${profit:.4f} | total P&L ${self.total_profit:+.4f}")
         self._stats()
 
     def record_loss(self, loss: float):
         self.losses       += 1
         self.total_profit += loss
         self.loss_streak  += 1
-        _log("KNOCKOUT", f"-${abs(loss):.2f} | streak={self.loss_streak}")
+        _log("KNOCKOUT",
+             f"-${abs(loss):.2f} | streak={self.loss_streak} | "
+             f"total P&L ${self.total_profit:+.4f}")
         self._stats()
 
     def can_trade(self) -> bool:
         if self.total_profit >= self.target_profit:
-            _log("RISK", f"Target profit reached (${self.total_profit:.2f}) — stopping")
+            _log("RISK",
+                 f"Target profit reached (${self.total_profit:.4f}) — stopping")
             return False
         if self.total_profit <= -self.stop_loss:
-            _log("RISK", f"Stop-loss hit (${self.total_profit:.2f}) — stopping")
+            _log("RISK",
+                 f"Stop-loss hit (${self.total_profit:.4f}) — stopping")
             return False
         return True
 
@@ -228,14 +231,18 @@ class RiskManager:
         print(f"\n{'='*55}", flush=True)
         print(f"  {total} trades | W:{self.wins} L:{self.losses} | WR:{wr:.1f}%",
               flush=True)
-        print(f"  P&L ${self.total_profit:+.2f} | stake ${self.stake:.2f}",
+        print(f"  P&L ${self.total_profit:+.4f} | stake ${self.stake:.2f}",
               flush=True)
         print(f"{'='*55}\n", flush=True)
         _jlog({
-            "type": "stats", "trades": total, "wins": self.wins,
-            "losses": self.losses, "wr": round(wr, 1),
-            "pnl": round(self.total_profit, 2),
-            "stake": self.stake, "ts": _ts(),
+            "type":   "stats",
+            "trades": total,
+            "wins":   self.wins,
+            "losses": self.losses,
+            "wr":     round(wr, 1),
+            "pnl":    round(self.total_profit, 4),
+            "stake":  self.stake,
+            "ts":     _ts(),
         })
 
 
@@ -245,8 +252,8 @@ class RiskManager:
 
 class DerivClient:
     def __init__(self, cfg):
-        self.cfg      = cfg
-        self.endpoint = (
+        self.cfg         = cfg
+        self.endpoint    = (
             f"wss://ws.derivws.com/websockets/v3?app_id={cfg['app_id']}"
         )
         self.ws          = None
@@ -361,6 +368,17 @@ class DerivClient:
             _log("BALANCE", f"Fetch error: {exc}")
         return None
 
+    async def subscribe_ticks(self) -> bool:
+        sym = self.cfg["symbol"]
+        await self._send({"ticks": sym, "subscribe": 1})
+        resp = await self._recv_type("tick", timeout=10)
+        if not resp or "error" in resp:
+            err = (resp or {}).get("error", {}).get("message", "timeout")
+            _log("TICK", f"Subscribe failed: {err}")
+            return False
+        _log("TICK", f"Subscribed to {sym}")
+        return True
+
     async def place_accumulator(
             self, growth_rate: float, stake: float) -> Optional[str]:
         proposal_req = {
@@ -372,7 +390,6 @@ class DerivClient:
             "growth_rate":   growth_rate,
             "symbol":        self.cfg["symbol"],
         }
-
         await self._send(proposal_req)
         proposal = await self._recv_type("proposal", timeout=12)
         if not proposal or "error" in proposal:
@@ -388,8 +405,10 @@ class DerivClient:
             _log("PROPOSAL", "No proposal ID")
             return None
 
+        win_amount = round(stake * growth_rate, 4)
         _log("PROPOSAL",
-             f"ACCU  growth={growth_rate*100:.0f}%  ask=${ask:.2f}")
+             f"ACCU  growth={growth_rate*100:.0f}%  ask=${ask:.2f}  "
+             f"win_if_ok=+${win_amount:.4f}")
 
         buy_time    = time.time()
         contract_id = None
@@ -420,33 +439,16 @@ class DerivClient:
              f"ACCU  ${stake:.2f}  growth={growth_rate*100:.0f}%  "
              f"contract={contract_id}")
 
-        # Subscribe to live updates
         try:
             await self._send({
                 "proposal_open_contract": 1,
-                "contract_id": contract_id,
-                "subscribe": 1,
+                "contract_id":            contract_id,
+                "subscribe":              1,
             })
         except Exception:
             pass
 
         return str(contract_id)
-
-    async def sell_contract(self, contract_id: str) -> Optional[float]:
-        """Sell (close) an open accumulator contract."""
-        try:
-            await self._send({"sell": contract_id, "price": 0})
-            resp = await self._recv_type("sell", timeout=10)
-            if resp and "sell" in resp:
-                sold_for = float(resp["sell"].get("sold_for", 0))
-                _log("SELL", f"Contract {contract_id} sold for ${sold_for:.2f}")
-                return sold_for
-            if resp and "error" in resp:
-                _log("SELL",
-                     f"Error: {resp['error'].get('message', '')}")
-        except Exception as exc:
-            _log("SELL", f"Exception: {exc}")
-        return None
 
     async def _recover_orphan(self, stake, buy_time) -> Optional[str]:
         for attempt in range(self.cfg["orphan_attempts"]):
@@ -488,30 +490,24 @@ class AccumulatorBot:
         self.engine = VolEngine(CONFIG)
         self.risk   = RiskManager(CONFIG)
 
-        self.tick_n:             int   = 0
-        self._last_trade_tick:   int   = 0
+        self.tick_n:             int            = 0
+        self._last_trade_tick:   int            = 0
         self.current_contract:   Optional[dict] = None
-        self.waiting_for_result: bool  = False
+        self.waiting_for_result: bool           = False
         self.lock_since:         Optional[float] = None
-        self._evaluating:        bool  = False
+        self._evaluating:        bool           = False
         self._balance_before:    Optional[float] = None
-        self._cb_paused_until:   float = 0.0
-        self._stop:              bool  = False
-
-        # Track current contract's running value
-        self._current_value:     float = 0.0
-        self._ticks_accumulated: int   = 0
+        self._cb_paused_until:   float          = 0.0
+        self._stop:              bool           = False
 
     def _unlock(self, reason="manual"):
         if self.waiting_for_result:
             cid = (self.current_contract or {}).get("id", "?")
             _log("UNLOCK", f"Contract {cid} ({reason})")
-        self.waiting_for_result  = False
-        self.current_contract    = None
-        self.lock_since          = None
-        self._evaluating         = False
-        self._current_value      = 0.0
-        self._ticks_accumulated  = 0
+        self.waiting_for_result = False
+        self.current_contract   = None
+        self.lock_since         = None
+        self._evaluating        = False
 
     def _check_lock_timeout(self):
         if not self.waiting_for_result or self.lock_since is None:
@@ -521,50 +517,41 @@ class AccumulatorBot:
             self._unlock("timeout")
 
     @staticmethod
-    def _is_knocked_out(data) -> bool:
-        for key in ("status", "contract_status"):
-            if data.get(key, "").lower() in ("sold", "lost"):
-                return True
+    def _is_settled(data) -> bool:
         if data.get("is_sold") or data.get("is_expired"):
             return True
+        for key in ("status", "contract_status"):
+            if data.get(key, "").lower() in ("sold", "won", "lost"):
+                return True
         return False
 
-    async def handle_contract_update(self, data) -> Optional[bool]:
-        """Handle live proposal_open_contract updates."""
+    async def handle_settlement(self, data) -> Optional[bool]:
         cid = str(data.get("contract_id", ""))
         if not self.current_contract or cid != self.current_contract["id"]:
             return None
+        if not self._is_settled(data):
+            return None
 
-        current_value  = float(data.get("bid_price", 0))
-        stake          = self.current_contract["stake"]
-        take_profit_at = stake * (1 + self.cfg["take_profit_pct"])
-        self._current_value     = current_value
-        self._ticks_accumulated = int(data.get("tick_count", 0))
+        bal_after  = await self.client.fetch_balance()
+        api_profit = float(data.get("profit", 0))
+        status     = data.get("status", "unknown")
 
-        # Check if knocked out
-        if self._is_knocked_out(data):
-            profit = float(data.get("profit", -stake))
-            bal_after = await self.client.fetch_balance()
-            if bal_after is not None and self._balance_before is not None:
-                actual = round(bal_after - self._balance_before, 2)
-            else:
-                actual = profit
+        if bal_after is not None and self._balance_before is not None:
+            actual = round(bal_after - self._balance_before, 4)
+            _log("BALANCE",
+                 f"Pre: ${self._balance_before:.2f} → "
+                 f"Post: ${bal_after:.4f} | "
+                 f"Actual: ${actual:+.4f} | API: ${api_profit:+.4f}")
+        else:
+            actual = api_profit
 
-            _log("KNOCKOUT",
-                 f"contract={cid}  "
-                 f"ticks={self._ticks_accumulated}  "
-                 f"loss=${abs(actual):.2f}")
+        print(f"\nRESULT  contract={cid}  status={status}  "
+              f"profit=${actual:+.4f}", flush=True)
 
-            _jlog({
-                "type": "result", "outcome": "knockout",
-                "cid": cid, "profit": actual,
-                "ticks": self._ticks_accumulated,
-                "pnl": self.risk.total_profit + actual,
-                "ts": _ts(),
-            })
-
+        if actual > 0:
+            self.risk.record_win(actual)
+        else:
             self.risk.record_loss(actual)
-
             if (self.risk.loss_streak > 0 and
                     self.risk.loss_streak % self.cfg["cb_limit"] == 0):
                 pause = self.cfg["cb_pause_secs"]
@@ -573,39 +560,20 @@ class AccumulatorBot:
                      f"{self.cfg['cb_limit']} consecutive knockouts → "
                      f"pausing {pause}s ({pause // 60}m)")
 
-            self._balance_before = None
-            self._unlock("knockout")
-            return self.risk.can_trade()
+        _jlog({
+            "type":   "result",
+            "cid":    cid,
+            "status": status,
+            "profit": actual,
+            "pnl":    round(self.risk.total_profit, 4),
+            "wins":   self.risk.wins,
+            "losses": self.risk.losses,
+            "ts":     _ts(),
+        })
 
-        # Check take profit threshold
-        if current_value >= take_profit_at:
-            _log("TP",
-                 f"Value ${current_value:.2f} ≥ target ${take_profit_at:.2f} "
-                 f"after {self._ticks_accumulated} ticks — selling")
-            sold_for = await self.client.sell_contract(cid)
-
-            if sold_for is not None:
-                bal_after = await self.client.fetch_balance()
-                if bal_after is not None and self._balance_before is not None:
-                    actual = round(bal_after - self._balance_before, 2)
-                else:
-                    actual = sold_for - stake
-
-                _jlog({
-                    "type": "result", "outcome": "take_profit",
-                    "cid": cid, "profit": actual,
-                    "sold_for": sold_for,
-                    "ticks": self._ticks_accumulated,
-                    "pnl": self.risk.total_profit + actual,
-                    "ts": _ts(),
-                })
-
-                self.risk.record_win(actual)
-                self._balance_before = None
-                self._unlock("take_profit")
-                return self.risk.can_trade()
-
-        return None
+        self._balance_before = None
+        self._unlock("settlement")
+        return self.risk.can_trade()
 
     async def on_tick(self, price: float):
         self.tick_n += 1
@@ -614,13 +582,8 @@ class AccumulatorBot:
 
         if self.tick_n % 20 == 0:
             warmup_left = max(0, self.cfg["min_warmup"] - self.engine.tick_n)
-            if self.waiting_for_result:
-                status = (f"ACCU ✓ ${self._current_value:.2f} "
-                          f"({self._ticks_accumulated}t)")
-            elif warmup_left > 0:
-                status = f"WARMUP({warmup_left})"
-            else:
-                status = "READY"
+            status = ("WAIT" if self.waiting_for_result else
+                      f"WARMUP({warmup_left})" if warmup_left > 0 else "READY")
             print(f"\r  #{self.tick_n}  p={price:.5f}  {status}  {_ts()}",
                   end="", flush=True)
 
@@ -641,22 +604,18 @@ class AccumulatorBot:
         if self.waiting_for_result:
             return
 
-        ok, growth_rate, sigma = self.engine.evaluate()
+        ok, growth_rate, sigma, ratio = self.engine.evaluate()
         avg = self.engine.session_avg_sigma()
+
+        if not ok:
+            return   # silent — too noisy to print every tick
 
         print(f"\n{'='*55}", flush=True)
         print(f"SIGNAL  #{self.tick_n}  {_ts()}", flush=True)
-        ratio_str = f"{sigma/avg:.2f}" if avg > 0 else "?"
-        print(f"  σ={sigma:.6f}  avg={avg:.6f}  ratio={ratio_str}",
-              flush=True)
-
-        if not ok:
-            print(f"  → No trade (σ not calm enough)", flush=True)
-            print(f"{'='*55}", flush=True)
-            return
-
-        print(f"  → ACCU  growth={growth_rate*100:.0f}%  "
-              f"TP={self.cfg['take_profit_pct']*100:.0f}%", flush=True)
+        print(f"  σ={sigma:.6f}  avg={avg:.6f}  ratio={ratio:.2f}", flush=True)
+        print(f"  → ACCU 1-tick  growth={growth_rate*100:.0f}%  "
+              f"stake=${self.cfg['stake']:.2f}  "
+              f"win=+${self.cfg['stake']*growth_rate:.4f}", flush=True)
         print(f"{'='*55}", flush=True)
 
         now = time.monotonic()
@@ -669,8 +628,7 @@ class AccumulatorBot:
             return
 
         stake = self.risk.stake
-
-        bal = await self.client.fetch_balance()
+        bal   = await self.client.fetch_balance()
         if bal is not None:
             self._balance_before = bal
             _log("BALANCE", f"Pre-trade: ${bal:.2f}")
@@ -690,13 +648,15 @@ class AccumulatorBot:
             self.waiting_for_result = True
             self.lock_since         = time.monotonic()
             self._last_trade_tick   = self.tick_n
-            _log("LOCK", f"Accumulating on {contract_id}")
+            _log("LOCK", f"Waiting for 1-tick settlement on {contract_id}")
             _jlog({
-                "type": "trade", "cid": contract_id,
-                "growth_rate": growth_rate, "stake": stake,
-                "sigma": round(sigma, 6),
-                "take_profit_pct": self.cfg["take_profit_pct"],
-                "ts": _ts(),
+                "type":        "trade",
+                "cid":         contract_id,
+                "growth_rate": growth_rate,
+                "stake":       stake,
+                "sigma":       round(sigma, 6),
+                "ratio":       round(ratio, 3),
+                "ts":          _ts(),
             })
         else:
             self._balance_before = None
@@ -717,35 +677,26 @@ class AccumulatorBot:
                     continue
                 if not await self.client.subscribe_ticks():
                     continue
-                # Re-attach open contract
                 if self.waiting_for_result and self.current_contract:
                     cid  = self.current_contract["id"]
-                    _log("RECONNECT", f"Re-attaching to {cid}")
-                    await self.client._send({
-                        "proposal_open_contract": 1,
-                        "contract_id": cid,
-                        "subscribe": 1,
-                    })
+                    data = await self.client.poll_contract(cid)
+                    if data:
+                        await self.handle_settlement(data)
+                    if self.waiting_for_result:
+                        await self.client._send({
+                            "proposal_open_contract": 1,
+                            "contract_id": cid,
+                            "subscribe":   1,
+                        })
                 _log("RECONNECT", "OK")
                 return True
             except Exception as exc:
                 _log("RECONNECT", f"Error: {exc}")
         return False
 
-    async def subscribe_ticks(self) -> bool:
-        sym = self.cfg["symbol"]
-        await self.client._send({"ticks": sym, "subscribe": 1})
-        resp = await self.client._recv_type("tick", timeout=10)
-        if not resp or "error" in resp:
-            err = (resp or {}).get("error", {}).get("message", "timeout")
-            _log("TICK", f"Subscribe failed: {err}")
-            return False
-        _log("TICK", f"Subscribed to {sym}")
-        return True
-
     async def _console(self):
         loop = asyncio.get_event_loop()
-        _log("CMD", "Commands: [s]tats  [u]nlock  [x]sell  [q]uit")
+        _log("CMD", "Commands: [s]tats  [u]nlock  [q]uit")
         while not self._stop:
             try:
                 cmd = (await loop.run_in_executor(None, input)).strip().lower()
@@ -753,19 +704,7 @@ class AccumulatorBot:
                     self.risk._stats()
                 elif cmd == "u":
                     self._unlock("user command")
-                elif cmd == "x":
-                    if self.current_contract:
-                        cid = self.current_contract["id"]
-                        _log("CMD", f"Manual sell on {cid}")
-                        await self.client.sell_contract(cid)
-                    else:
-                        print("No open contract", flush=True)
                 elif cmd in ("q", "quit", "exit"):
-                    # Sell any open contract before quitting
-                    if self.current_contract:
-                        cid = self.current_contract["id"]
-                        _log("CMD", f"Selling {cid} before exit")
-                        await self.client.sell_contract(cid)
                     self._stop = True
                     break
             except (EOFError, KeyboardInterrupt):
@@ -773,14 +712,14 @@ class AccumulatorBot:
 
     async def run(self):
         cfg = self.cfg
-        tp_pct = cfg["take_profit_pct"] * 100
         print("\n" + "="*55, flush=True)
-        print("  DERIV ACCUMULATOR BOT", flush=True)
+        print("  DERIV ACCUMULATOR BOT — 1-TICK", flush=True)
         print("="*55, flush=True)
         print(f"  Symbol      : {cfg['symbol']}", flush=True)
-        print(f"  Growth rate : adaptive (1–2% based on σ)", flush=True)
-        print(f"  Take profit : {tp_pct:.0f}% above stake", flush=True)
+        print(f"  Contract    : ACCU 1-tick", flush=True)
+        print(f"  Growth rate : 3–5% adaptive (calm σ only)", flush=True)
         print(f"  Stake       : ${cfg['stake']:.2f} flat", flush=True)
+        print(f"  Entry gate  : σ < {cfg['entry_calm']}× session avg", flush=True)
         print(f"  Target      : +${cfg['target_profit']}  "
               f"Stop: -${cfg['stop_loss']}", flush=True)
         print(f"  Breaker     : {cfg['cb_limit']} knockouts → "
@@ -794,7 +733,7 @@ class AccumulatorBot:
 
         if not await self.client.connect():
             return
-        if not await self.subscribe_ticks():
+        if not await self.client.subscribe_ticks():
             return
 
         _log("BOT", f"Live — warming up ({cfg['min_warmup']} ticks)...")
@@ -826,17 +765,30 @@ class AccumulatorBot:
                         await self.on_tick(float(quote))
 
                 if "proposal_open_contract" in response:
-                    result = await self.handle_contract_update(
+                    result = await self.handle_settlement(
                         response["proposal_open_contract"])
                     if result is False:
                         break
 
+                if "buy" in response:
+                    result = await self.handle_settlement(response["buy"])
+                    if result is False:
+                        break
+
+                if "transaction" in response:
+                    tx = response["transaction"]
+                    if "contract_id" in tx:
+                        result = await self.handle_settlement({
+                            "contract_id": tx.get("contract_id"),
+                            "profit":      tx.get("profit", 0),
+                            "status":      tx.get("action", ""),
+                            "is_sold":     True,
+                        })
+                        if result is False:
+                            break
+
         except KeyboardInterrupt:
             print("\n\nInterrupted", flush=True)
-            if self.current_contract:
-                cid = self.current_contract["id"]
-                _log("EXIT", f"Selling open contract {cid}")
-                await self.client.sell_contract(cid)
         except Exception as exc:
             print(f"\nUnhandled error: {exc}", flush=True)
             import traceback
